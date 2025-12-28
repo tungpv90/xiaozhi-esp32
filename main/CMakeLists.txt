@@ -718,6 +718,21 @@ if(CONFIG_IDF_TARGET_ESP32)
                              )
 endif()
 
+# Adding missing files from the display folder
+list(APPEND SOURCES
+    "display/animation_flash_reader_new.cc"
+    "display/ssd1331.cc"
+    "display/ssd1331_display.cc"
+    "display/font8x8_basic.c"
+    "display/adafruit_gfx/adafruit_gfx.cc"
+    "display/adafruit_gfx/glcdfont.cc"
+    "display/lvgl_display/lvgl_font.cc"
+    "display/lvgl_display/lvgl_image.cc"
+    "display/lvgl_display/lvgl_theme.cc"
+    "display/lvgl_display/gif/lvgl_gif.cc"
+    "display/lvgl_display/gif/gifdec.c"
+)
+
 idf_component_register(SRCS ${SOURCES}
                     EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
