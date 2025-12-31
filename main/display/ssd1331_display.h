@@ -31,6 +31,7 @@ public:
     bool initAnimations();
     bool loadAnimation(const char* animation_name);
     void playAnimation(bool loop);
+    void playAnimation(bool loop, bool with_sound);
 
 protected:
     virtual bool Lock(int timeout_ms = 0) override;

@@ -2,6 +2,7 @@
 #include "codecs/es8311_audio_codec.h"
 #include "display/oled_display.h"
 #include "display/ssd1331_display.h"
+#include "audio/codecs/no_audio_codec.h"
 
 #include "application.h"
 #include "button.h"
@@ -228,9 +229,27 @@ public:
     }
 
     virtual AudioCodec* GetAudioCodec() override {
+
+        /*
         static Es8311AudioCodec audio_codec(codec_i2c_bus_, I2C_NUM_0, AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
             AUDIO_I2S_GPIO_MCLK, AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, AUDIO_I2S_GPIO_DOUT, AUDIO_I2S_GPIO_DIN,
             AUDIO_CODEC_PA_PIN, AUDIO_CODEC_ES8311_ADDR);
+        return &audio_codec;
+        */
+        // MAX98357A chỉ cần I2S output (TX), không cần RX
+        // Dùng Simplex với mic pins = GPIO_NUM_NC
+        static NoAudioCodecSimplex audio_codec(
+            AUDIO_INPUT_SAMPLE_RATE,
+            AUDIO_OUTPUT_SAMPLE_RATE,
+            // Speaker I2S pins
+            (gpio_num_t)AUDIO_I2S_GPIO_BCLK,  // spk_bclk
+            (gpio_num_t)AUDIO_I2S_GPIO_WS,    // spk_ws
+            (gpio_num_t)AUDIO_I2S_GPIO_DOUT,  // spk_dout
+            // MIC I2S pins (không dùng)
+            GPIO_NUM_NC,  // mic_sck
+            GPIO_NUM_NC,  // mic_ws
+            GPIO_NUM_NC   // mic_din
+        );
         return &audio_codec;
     }
 

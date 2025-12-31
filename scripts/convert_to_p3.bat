@@ -1,0 +1,1 @@
+ffmpeg -i input.mp3 -f s16le -ar 16000 -ac 1 output.p3

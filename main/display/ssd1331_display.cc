@@ -51,9 +51,9 @@ Ssd1331Display::Ssd1331Display(spi_device_handle_t spi,
     // Simple boot marker
     //lcd_.drawText(0, 0, "Booting...", 0xFF00);
 
-    // Auto-play the "meter" animation at startup if available
+    // Auto-play the "meter" animation at startup (no sound - AudioService not ready yet)
     if (initAnimations() && loadAnimation("meter")) {
-        playAnimation(false);
+        //playAnimation(true, true);  // play once without sound during boot
     }
 }
 
@@ -105,12 +105,18 @@ void Ssd1331Display::DrawTextLines(int16_t x, int16_t y, const char* text, uint1
 }
 
 void Ssd1331Display::SetStatus(const char* status) {
-    return;
+   
     ESP_LOGI(TAG, "SetStatus: %s", status ? status : "");
     DisplayLockGuard lock(this);
     if (power_save_) return;
-    Clear();
-    DrawTextLines(0, 0, status ? status : "", 0xFFFF);
+    
+    // Test: Play animation with sound when status changes (after app is ready)
+    if (status && animation_loaded_) {
+        playAnimation(true, true);  // play once with sound
+    }
+    
+    //Clear();
+    //DrawTextLines(0, 0, status ? status : "", 0xFFFF);
 }
 
 void Ssd1331Display::ShowNotification(const char* notification, int /*duration_ms*/) {
@@ -183,9 +189,13 @@ bool Ssd1331Display::loadAnimation(const char* animation_name) {
 }
 
 void Ssd1331Display::playAnimation(bool loop) {
+    playAnimation(loop, false);  // Default: no sound
+}
+
+void Ssd1331Display::playAnimation(bool loop, bool with_sound) {
     if (!animation_loaded_) return;
     do {
         // Streamed playback from internal flash; uses shared frame buffer to minimize RAM
-        anim_reader_.play(current_anim_name_.c_str(), &lcd_, 33);
+        anim_reader_.play(current_anim_name_.c_str(), &lcd_, 33, with_sound);
     } while (loop);
 }

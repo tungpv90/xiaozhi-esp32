@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <functional>
 #include "esp_flash.h"
 #include "esp_log.h"
 #include "esp_partition.h"
@@ -34,13 +35,18 @@ public:
     std::vector<std::string> getAnimationNames() const;
 
     // Play by name; returns false on any read/parse error.
-    bool play(const char* animation_name, SSD1331* display, int delay_ms = 100);
+    // If with_sound is true and audio data exists, plays sound alongside animation.
+    bool play(const char* animation_name, SSD1331* display, int delay_ms = 100, bool with_sound = false);
 
     // Get frame count for an entry.
     int getFrameCount(const AnimationEntry& anim) const;
 
     // Lookup by name (NAME_SIZE comparison).
     const AnimationEntry* findAnimation(const char* name) const;
+
+    // Get sound data info from animation.
+    // Returns audio_addr and audio_size, or 0 if no audio.
+    bool getSoundInfo(const char* animation_name, uint32_t& audio_addr, uint32_t& audio_size) const;
 
     // Optional raw write helper (chunks, caller must erase region first).
     bool writeRaw(uint32_t rel_addr, const void* data, size_t len);
@@ -54,6 +60,8 @@ private:
     bool loadAnimationTable();
     bool read(uint32_t rel_addr, void* out, size_t len) const;
     bool decodeRLEFrameStreamed(const AnimationEntry& anim, int frame_idx, std::vector<uint16_t>& out_frame);
+    // Stream OGG/Opus audio directly from flash - memory efficient for ESP32-C3
+    void streamOggSound(uint32_t audio_addr, uint32_t audio_size);
 
     const esp_partition_t* partition_ = nullptr;
     std::string partition_label_;

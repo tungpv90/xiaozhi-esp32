@@ -1,6 +1,7 @@
 #include "animation_flash_reader_new.h"
 #include <cstring>
 #include "spi_flash_mmap.h"
+#include "application.h"
 
 #define TAG "FLASH_ANIM_INT"
 
@@ -164,6 +165,43 @@ int AnimationFlashReader::getFrameCount(const AnimationEntry& anim) const {
     return static_cast<int>((header[5] << 8) | header[4]);
 }
 
+bool AnimationFlashReader::getSoundInfo(const char* animation_name, uint32_t& audio_addr, uint32_t& audio_size) const {
+    audio_addr = 0;
+    audio_size = 0;
+    
+    const AnimationEntry* anim = findAnimation(animation_name);
+    if (!anim) {
+        ESP_LOGE(TAG, "Animation '%s' not found for sound info", animation_name ? animation_name : "(null)");
+        return false;
+    }
+
+    // ANIM header: ANIM(4) + frame_count(2) + frame_table_offset(4) + frame_data_size(4) + audio_data_size(4) = 18 bytes
+    uint8_t header[18];
+    if (!read(anim->offset, header, sizeof(header)) || memcmp(header, "ANIM", 4) != 0) {
+        ESP_LOGE(TAG, "Invalid ANIM header at 0x%lx", static_cast<unsigned long>(anim->offset));
+        return false;
+    }
+
+    uint16_t frame_count = (header[5] << 8) | header[4];
+    uint32_t frame_table_offset = (header[9] << 24) | (header[8] << 16) | (header[7] << 8) | header[6];
+    uint32_t frame_data_size = (header[13] << 24) | (header[12] << 16) | (header[11] << 8) | header[10];
+    uint32_t audio_data_size = (header[17] << 24) | (header[16] << 16) | (header[15] << 8) | header[14];
+
+    if (audio_data_size == 0) {
+        ESP_LOGI(TAG, "No audio data in animation '%s'", animation_name);
+        return false;
+    }
+
+    // Audio data starts after frame_data: anim.offset + frame_table_offset + frame_count * 8 + frame_data_size
+    audio_addr = anim->offset + frame_table_offset + frame_count * 8 + frame_data_size;
+    audio_size = audio_data_size;
+    
+    ESP_LOGI(TAG, "Sound info: anim='%s', audio_addr=0x%lx, size=%lu", 
+             animation_name, static_cast<unsigned long>(audio_addr), static_cast<unsigned long>(audio_size));
+
+    return true;
+}
+
 bool AnimationFlashReader::decodeRLEFrameStreamed(const AnimationEntry& anim, int frame_idx,
                                                   std::vector<uint16_t>& out_frame) {
     // ANIM header format (from pack script):
@@ -241,7 +279,7 @@ bool AnimationFlashReader::decodeRLEFrameStreamed(const AnimationEntry& anim, in
     return true;
 }
 
-bool AnimationFlashReader::play(const char* animation_name, SSD1331* display, int delay_ms) {
+bool AnimationFlashReader::play(const char* animation_name, SSD1331* display, int delay_ms, bool with_sound) {
     if (!display) return false;
     const AnimationEntry* anim = findAnimation(animation_name);
     if (!anim) {
@@ -259,13 +297,26 @@ bool AnimationFlashReader::play(const char* animation_name, SSD1331* display, in
     uint16_t frame_count = (header[5] << 8) | header[4];
     uint32_t frame_table_offset = (header[9] << 24) | (header[8] << 16) | (header[7] << 8) | header[6];
     uint32_t frame_data_size = (header[13] << 24) | (header[12] << 16) | (header[11] << 8) | header[10];
+    uint32_t audio_data_size = (header[17] << 24) | (header[16] << 16) | (header[15] << 8) | header[14];
 
-    ESP_LOGI(TAG, "Play '%s': %u frames, table_offset=%lu, frame_data=%lu", anim->name, frame_count,
-             static_cast<unsigned long>(frame_table_offset), static_cast<unsigned long>(frame_data_size));
+    ESP_LOGI(TAG, "Play '%s': %u frames, table_offset=%lu, frame_data=%lu, audio=%lu", anim->name, frame_count,
+             static_cast<unsigned long>(frame_table_offset), static_cast<unsigned long>(frame_data_size),
+             static_cast<unsigned long>(audio_data_size));
 
     if (frame_count == 0 || frame_count > 10000) {
         ESP_LOGE(TAG, "Invalid frame_count %u", frame_count);
         return false;
+    }
+
+    // Stream sound from flash if requested and audio data exists (memory-efficient for ESP32-C3)
+    uint32_t audio_addr = 0;
+    uint32_t audio_size = 0;
+    if (with_sound && audio_data_size > 0) {
+        // Calculate audio address without loading data into RAM
+        audio_addr = anim->offset + frame_table_offset + frame_count * 8 + frame_data_size;
+        audio_size = audio_data_size;
+        // Start streaming OGG audio from flash
+        streamOggSound(audio_addr, audio_size);
     }
 
     frame_buffer_.resize(MAX_FRAME_PIXELS); // reuse single buffer (~12 KB)
@@ -281,4 +332,65 @@ bool AnimationFlashReader::play(const char* animation_name, SSD1331* display, in
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
     return true;
+}
+
+void AnimationFlashReader::streamOggSound(uint32_t audio_addr, uint32_t audio_size) {
+    // OGG/Opus format - use Application::PlaySound() which already has OGG parser
+    // For ESP32-C3 memory efficiency, we read in chunks
+    
+    if (audio_size == 0) {
+        ESP_LOGW(TAG, "No audio data to stream");
+        return;
+    }
+    
+    // Safety check: don't play sound if Application/AudioService not yet initialized
+    // This can happen during board initialization (constructor phase)
+    auto& app = Application::GetInstance();
+    if (app.GetDeviceState() == kDeviceStateUnknown) {
+        ESP_LOGW(TAG, "AudioService not ready, skipping sound playback");
+        return;
+    }
+    
+    // For small OGG files (typical animation sounds), load into temporary buffer
+    // Most animation sounds are < 50KB, acceptable for ESP32-C3's 400KB SRAM
+    // For very large files, consider streaming approach
+    static constexpr size_t MAX_OGG_SIZE = 64 * 1024;  // 64KB max
+    
+    if (audio_size > MAX_OGG_SIZE) {
+        ESP_LOGW(TAG, "OGG file too large (%lu bytes), max %u", 
+                 static_cast<unsigned long>(audio_size), MAX_OGG_SIZE);
+        return;
+    }
+    
+    // Allocate temporary buffer for OGG data
+    std::vector<char> ogg_data(audio_size);
+    
+    // Read OGG data in chunks from flash
+    uint32_t offset = 0;
+    while (offset < audio_size) {
+        size_t chunk = (audio_size - offset) > READ_CHUNK ? READ_CHUNK : (audio_size - offset);
+        if (!read(audio_addr + offset, ogg_data.data() + offset, chunk)) {
+            ESP_LOGE(TAG, "Failed to read OGG data at offset 0x%lx", static_cast<unsigned long>(offset));
+            return;
+        }
+        offset += chunk;
+        
+        // Yield periodically for single-core ESP32-C3
+        if ((offset / READ_CHUNK) % 4 == 0) {
+            taskYIELD();
+        }
+    }
+    
+    ESP_LOGI(TAG, "Playing OGG sound, size=%lu bytes", static_cast<unsigned long>(audio_size));
+    
+    // Debug: Check OGG magic bytes
+    if (audio_size >= 4) {
+        ESP_LOGI(TAG, "OGG first 4 bytes: %02X %02X %02X %02X ('%c%c%c%c')",
+                 (uint8_t)ogg_data[0], (uint8_t)ogg_data[1], (uint8_t)ogg_data[2], (uint8_t)ogg_data[3],
+                 ogg_data[0] >= 32 ? ogg_data[0] : '.', ogg_data[1] >= 32 ? ogg_data[1] : '.',
+                 ogg_data[2] >= 32 ? ogg_data[2] : '.', ogg_data[3] >= 32 ? ogg_data[3] : '.');
+    }
+    
+    // Use Application's PlaySound which handles OGG/Opus parsing
+    app.PlaySound(std::string_view(ogg_data.data(), audio_size));
 }
